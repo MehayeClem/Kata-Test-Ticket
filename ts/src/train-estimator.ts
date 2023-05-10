@@ -1,13 +1,18 @@
 import {
+  ApiException,
   DiscountCard,
   InvalidTripInputException,
   Passenger,
   TripRequest,
+  fetchBaseTicketPriceException,
+  TicketEstimationException,
 } from "./model/trip.request";
 
 export class TrainTicketEstimator {
+  // Asynchronously fetch the base ticket price for a given train trip
   async fetchBaseTicketPrice(trainDetails: TripRequest): Promise<number> {
     try {
+      // Make an API call with the required train details
       const response = await fetch(
         `https://sncftrenitaliadb.com/api/train/estimate/price?from=${
           trainDetails.details.from
@@ -16,31 +21,44 @@ export class TrainTicketEstimator {
         }&date=${trainDetails.details.when.toISOString()}`
       );
 
+      // Check if the API call was successful
       if (!response.ok) {
         throw new Error("Failed to fetch ticket price");
       }
 
+      // Parse the response JSON data
       const data = await response.json();
-      return data?.price ?? -1;
+      // Check if the price data is present in the response
+      if (data.price) {
+        return data.price;
+      } else {
+        // If the price data is not present, throw an API error
+        throw new ApiException("Api error");
+      }
     } catch (error) {
-      console.error("Error fetching ticket price:", error);
-      return -1;
+      // If there's an error while fetching ticket price, throw a custom exception
+      throw new fetchBaseTicketPriceException("Error fetching ticket price");
     }
   }
 
+  // Validate the train trip details provided in the request
   validateTrainDetails(trainDetails: TripRequest): void {
+    // Check if there are any passengers specified in the request
     if (trainDetails.passengers.length === 0) {
       throw new InvalidTripInputException("No passengers specified");
     }
 
+    // Check if the starting city is valid
     if (trainDetails.details.from.trim().length === 0) {
       throw new InvalidTripInputException("Start city is invalid");
     }
 
+    // Check if the destination city is valid
     if (trainDetails.details.to.trim().length === 0) {
       throw new InvalidTripInputException("Destination city is invalid");
     }
 
+    // Get the current date and set it to midnight
     const currentDate = new Date();
     const todayMidnight = new Date(
       currentDate.getFullYear(),
@@ -51,129 +69,166 @@ export class TrainTicketEstimator {
       0
     );
 
+    // Check if the travel date is valid (must be today or later)
     if (trainDetails.details.when < todayMidnight) {
       throw new InvalidTripInputException("Date is invalid");
     }
   }
 
+  // Calculate the ticket price for each passenger in the trip request
   calculateTicketPriceForPassenger(
     baseTicketPrice: number,
     passengers: Passenger[],
     travelDate: Date
   ): number {
-    let ticketPrice: number = 0;
-    for (let passenger of passengers) {
+    // Get the current date and define constants for six hours and milliseconds in a day
+    const currentDate = new Date();
+    const SIX_HOURS = 6 * 60 * 60 * 1000;
+    const MSTODAY = 1000 * 3600 * 24;
+
+    // Iterate over the passengers array and calculate the ticket price for each passenger
+    const ticketPrice = passengers.reduce((totalPrice, passenger) => {
+      // Validate passenger age
       if (passenger.age < 0) {
         throw new InvalidTripInputException("Age is invalid");
       }
 
-      if (passenger.age < 1) {
-        ticketPrice = 0;
-      } else if (passenger.age <= 17) {
-        ticketPrice = baseTicketPrice * 0.6;
-      } else if (passenger.age >= 70) {
-        ticketPrice = baseTicketPrice * 0.8;
-        if (passenger.discounts.includes(DiscountCard.Senior)) {
-          ticketPrice -= baseTicketPrice * 0.2;
+      // Initialize the passenger ticket price
+      let passengerTicketPrice = 0;
+
+      // Check if the passenger is eligible for a family discount
+      const hasFamilyDiscount =
+        passenger.discounts.includes(DiscountCard.Family) &&
+        passenger.lastName &&
+        passenger.lastName.trim().length > 0;
+
+      if (hasFamilyDiscount) {
+        // Filter passengers with the same last name
+        const familyMembersWithSameLastName = passengers.filter(
+          (p) => p.lastName === passenger.lastName
+        );
+
+        // Apply family discount if there are more than one family members with the same last name
+        if (familyMembersWithSameLastName.length > 1) {
+          passengerTicketPrice = baseTicketPrice * 0.7;
+          return totalPrice + passengerTicketPrice;
         }
-      } else {
-        ticketPrice = baseTicketPrice * 1.2;
       }
 
-      const currentDate = new Date();
-      if (
+      // Apply discounts based on passenger attributes and discounts
+      if (passenger.discounts.includes(DiscountCard.TrainStrokeStaff)) {
+        passengerTicketPrice = 1;
+      } else if (passenger.age < 1) {
+        passengerTicketPrice = 0;
+      } else if (passenger.age > 0 && passenger.age < 4) {
+        passengerTicketPrice = 9;
+      } else if (passenger.age <= 17) {
+        passengerTicketPrice = baseTicketPrice * 0.6;
+      } else if (passenger.age >= 70) {
+        passengerTicketPrice = baseTicketPrice * 0.8;
+        if (passenger.discounts.includes(DiscountCard.Senior)) {
+          passengerTicketPrice -= baseTicketPrice * 0.2;
+        }
+      } else {
+        passengerTicketPrice = baseTicketPrice * 1.2;
+      }
+
+      // Apply time-based discounts
+      if (travelDate.getTime() - currentDate.getTime() <= SIX_HOURS) {
+        passengerTicketPrice *= 0.8;
+      } else if (
         travelDate.getTime() >= currentDate.setDate(currentDate.getDate() + 30)
       ) {
-        ticketPrice -= baseTicketPrice * 0.2;
+        passengerTicketPrice -= baseTicketPrice * 0.2;
       } else if (
         travelDate.getTime() >
         currentDate.setDate(currentDate.getDate() - 30 + 5)
       ) {
         const diff = Math.abs(travelDate.getTime() - currentDate.getTime());
-        const diffDays = Math.ceil(diff / (1000 * 3600 * 24));
+        const diffDays = Math.ceil(diff / MSTODAY);
 
-        ticketPrice += (20 - diffDays) * 0.02 * baseTicketPrice;
+        passengerTicketPrice += (20 - diffDays) * 0.02 * baseTicketPrice;
       } else {
-        ticketPrice += baseTicketPrice;
+        passengerTicketPrice += baseTicketPrice;
       }
 
-      if (passenger.age > 0 && passenger.age < 4) {
-        ticketPrice = 9;
-      }
+      // Add the passenger ticket price to the total price
+      return totalPrice + passengerTicketPrice;
+    }, 0);
 
-      if (passenger.discounts.includes(DiscountCard.TrainStroke)) {
-        ticketPrice = 1;
-      }
-    }
     return ticketPrice;
   }
 
+  // Apply group discounts to the total price based on the passengers and their discount cards
   applyGroupDiscounts(
     totalPrice: number,
     baseTicketPrice: number,
     passengers: Passenger[]
   ): number {
-    let totalPriceAfterDiscount = totalPrice;
-
-    function hasDiscount(
-      passengers: Passenger[],
-      discount: DiscountCard
-    ): boolean {
-      return passengers.some((passenger) =>
-        passenger.discounts.includes(discount)
+    // Check if there's a couple discount and if no passengers are minors
+    const hasCoupleDiscount =
+      passengers.length === 2 &&
+      passengers.some((passenger) =>
+        passenger.discounts.includes(DiscountCard.Couple)
       );
-    }
-
-    function hasMinor(passengers: Passenger[]): boolean {
-      return passengers.some((passenger) => passenger.age < 18);
-    }
-
-    if (passengers.length == 2) {
-      const hasCoupleDiscount = hasDiscount(passengers, DiscountCard.Couple);
-      const hasMinorDiscount = hasMinor(passengers);
-
-      if (hasCoupleDiscount && !hasMinorDiscount) {
-        totalPriceAfterDiscount -= baseTicketPrice * 0.2 * 2;
-      }
-    }
-
-    if (passengers.length == 1) {
-      const hasHalfCoupleDiscount = hasDiscount(
-        passengers,
-        DiscountCard.HalfCouple
+    const hasHalfCoupleDiscount =
+      passengers.length === 1 &&
+      passengers.some((passenger) =>
+        passenger.discounts.includes(DiscountCard.HalfCouple)
       );
-      const hasMinorDiscount = hasMinor(passengers);
+    const hasMinor = passengers.some((passenger) => passenger.age < 18);
 
-      if (hasHalfCoupleDiscount && !hasMinorDiscount) {
-        totalPriceAfterDiscount -= baseTicketPrice * 0.1;
-      }
+    // Apply the couple discount if conditions are met
+    if (hasCoupleDiscount && !hasMinor) {
+      totalPrice -= baseTicketPrice * 0.2 * 2;
     }
 
-    return totalPriceAfterDiscount;
+    // Apply the half-couple discount if conditions are met
+    if (hasHalfCoupleDiscount && !hasMinor) {
+      totalPrice -= baseTicketPrice * 0.1;
+    }
+
+    // Return the totalPrice with the applied discounts
+    return totalPrice;
   }
 
+  // Asynchronously estimate the total ticket price for the given train details
   async estimateTicketPrice(trainDetails: TripRequest): Promise<number> {
-    this.validateTrainDetails;
+    try {
+      // Validate the train details
+      this.validateTrainDetails(trainDetails);
 
-    const baseTicketPrice: number = await this.fetchBaseTicketPrice(
-      trainDetails
-    );
-    const passengers: Passenger[] = trainDetails.passengers;
+      // Fetch the base ticket price for the trip
+      const baseTicketPrice: number = await this.fetchBaseTicketPrice(
+        trainDetails
+      );
 
-    let totalPrice: number = 0;
-    totalPrice = this.calculateTicketPriceForPassenger(
-      baseTicketPrice,
-      passengers,
-      trainDetails.details.when
-    );
+      // Get the passengers array from the trainDetails object
+      const passengers: Passenger[] = trainDetails.passengers;
 
-    let totalPriceAfterDiscount: number = 0;
-    totalPriceAfterDiscount = this.applyGroupDiscounts(
-      totalPrice,
-      baseTicketPrice,
-      passengers
-    );
+      // Initialize the total price and calculate it for each passenger
+      let totalPrice: number = 0;
+      totalPrice = this.calculateTicketPriceForPassenger(
+        baseTicketPrice,
+        passengers,
+        trainDetails.details.when
+      );
 
-    return totalPriceAfterDiscount;
+      // Initialize the total price after applying group discounts
+      let totalPriceAfterDiscount: number = 0;
+
+      // Apply group discounts to the total price
+      totalPriceAfterDiscount = this.applyGroupDiscounts(
+        totalPrice,
+        baseTicketPrice,
+        passengers
+      );
+
+      // Return the total price after applying group discounts
+      return totalPriceAfterDiscount;
+    } catch (error) {
+      // Throw an exception if there is an error estimating the ticket price
+      throw new TicketEstimationException("Error estimating ticket price");
+    }
   }
 }
