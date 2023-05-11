@@ -21,11 +21,6 @@ export class TrainTicketEstimator {
         }&date=${trainDetails.details.when.toISOString()}`
       );
 
-      // Check if the API call was successful
-      if (!response.ok) {
-        throw new Error("Failed to fetch ticket price");
-      }
-
       // Parse the response JSON data
       const data = await response.json();
       // Check if the price data is present in the response
@@ -37,7 +32,7 @@ export class TrainTicketEstimator {
       }
     } catch (error) {
       // If there's an error while fetching ticket price, throw a custom exception
-      throw new fetchBaseTicketPriceException("Error fetching ticket price");
+      throw new fetchBaseTicketPriceException("Failed to fetch ticket price");
     }
   }
 
@@ -118,10 +113,13 @@ export class TrainTicketEstimator {
       // Apply discounts based on passenger attributes and discounts
       if (passenger.discounts.includes(DiscountCard.TrainStrokeStaff)) {
         passengerTicketPrice = 1;
+        return totalPrice + passengerTicketPrice;
       } else if (passenger.age < 1) {
         passengerTicketPrice = 0;
-      } else if (passenger.age > 0 && passenger.age < 4) {
+        return totalPrice + passengerTicketPrice;
+      } else if (passenger.age > 1 && passenger.age < 4) {
         passengerTicketPrice = 9;
+        return totalPrice + passengerTicketPrice;
       } else if (passenger.age <= 17) {
         passengerTicketPrice = baseTicketPrice * 0.6;
       } else if (passenger.age >= 70) {
@@ -133,16 +131,17 @@ export class TrainTicketEstimator {
         passengerTicketPrice = baseTicketPrice * 1.2;
       }
 
-      // Apply time-based discounts
+      //Apply time-based discounts
       if (travelDate.getTime() - currentDate.getTime() <= SIX_HOURS) {
         passengerTicketPrice *= 0.8;
       } else if (
-        travelDate.getTime() >= currentDate.setDate(currentDate.getDate() + 30)
+        travelDate.getTime() >=
+        currentDate.getTime() + 30 * MSTODAY
       ) {
         passengerTicketPrice -= baseTicketPrice * 0.2;
       } else if (
-        travelDate.getTime() >
-        currentDate.setDate(currentDate.getDate() - 30 + 5)
+        travelDate.getTime() < currentDate.getTime() + 30 * MSTODAY &&
+        travelDate.getTime() > currentDate.getTime() + 5 * MSTODAY
       ) {
         const diff = Math.abs(travelDate.getTime() - currentDate.getTime());
         const diffDays = Math.ceil(diff / MSTODAY);
